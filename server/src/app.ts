@@ -1,3 +1,5 @@
+import dotenv from 'dotenv';
+dotenv.config();
 import express from 'express';
 import cors from 'cors';
 import propertyRoutes from './routes/propertyRoutes';
@@ -10,8 +12,15 @@ import dashboardRoutes from './routes/dashboardRoutes';
 const app = express();
 
 // Middlewares
-app.use(cors({ origin: '*' }));
+app.use(cors({
+  origin: true,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+}));
+app.options('*', cors());
 app.use(express.json());
+
 
 // Base Health Check
 app.get('/api/health', (_req, res) => {

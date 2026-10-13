@@ -157,4 +157,6 @@ RentPaymentSchema.pre<IRentPayment>('save', function (next) {
   next();
 });
 
-export const RentPayment = mongoose.models.RentPayment || mongoose.model<IRentPayment>('RentPayment', RentPaymentSchema);
+export const RentPayment =
+  (mongoose.models.RentPayment as mongoose.Model<IRentPayment>) ||
+  mongoose.model<IRentPayment>('RentPayment', RentPaymentSchema);

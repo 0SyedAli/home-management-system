@@ -1,9 +1,12 @@
+import dotenv from 'dotenv';
+dotenv.config();
 import mongoose from 'mongoose';
 import app from './app';
 import { seedDatabase } from './seeds/seedData';
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/home_management_db';
+
 
 const startServer = async () => {
   try {

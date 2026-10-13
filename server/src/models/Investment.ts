@@ -96,4 +96,5 @@ InvestmentSchema.pre<IInvestment>('save', function (next) {
 });
 
 export const Investment =
-  mongoose.models.Investment || mongoose.model<IInvestment>('Investment', InvestmentSchema);
+  (mongoose.models.Investment as mongoose.Model<IInvestment>) ||
+  mongoose.model<IInvestment>('Investment', InvestmentSchema);

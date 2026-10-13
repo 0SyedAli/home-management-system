@@ -3,21 +3,27 @@
   "version": "1.0.0",
   "description": "Comprehensive Household Financial & Rental Management System",
   "scripts": {
+    "dev": "next dev client",
+    "client": "next dev client",
+    "client:build": "next build client",
     "server": "ts-node server/src/server.ts",
-    "seed": "SEED_ON_START=true ts-node server/src/server.ts",
-    "client": "next dev client"
+    "server:build": "tsc -p server/tsconfig.json",
+    "seed": "SEED_ON_START=true ts-node server/src/server.ts"
   },
   "dependencies": {
     "@emotion/react": "^11.11.4",
     "@emotion/styled": "^11.11.5",
     "@mui/material": "^5.15.20",
+    "@reduxjs/toolkit": "^2.13.0",
     "cors": "^2.8.5",
+    "dotenv": "^18.0.7",
     "express": "^4.19.2",
     "lucide-react": "^0.395.0",
     "mongoose": "^8.4.3",
     "next": "^14.2.4",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "react-redux": "^9.3.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

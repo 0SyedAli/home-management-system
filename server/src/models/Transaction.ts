@@ -118,4 +118,5 @@ TransactionSchema.index({ type: 1, year: 1, month: 1 });
 TransactionSchema.index({ category: 1, year: 1, month: 1 });
 
 export const Transaction =
-  mongoose.models.Transaction || mongoose.model<ITransaction>('Transaction', TransactionSchema);
+  (mongoose.models.Transaction as mongoose.Model<ITransaction>) ||
+  mongoose.model<ITransaction>('Transaction', TransactionSchema);

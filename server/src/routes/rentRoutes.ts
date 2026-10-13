@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import mongoose from 'mongoose';
 import { RentPayment } from '../models/RentPayment';
 import { PropertyUnit } from '../models/PropertyUnit';
 import { Transaction } from '../models/Transaction';
@@ -106,47 +107,74 @@ router.post('/collect', async (req: Request, res: Response) => {
       notes,
     } = req.body;
 
+    const now = new Date();
+    const payDate = paymentDate ? new Date(paymentDate) : now;
+    const currentMonth = month ? Number(month) : (payDate.getMonth() + 1);
+    const currentYear = year ? Number(year) : payDate.getFullYear();
+
     let payment;
     if (rentPaymentId) {
       payment = await RentPayment.findById(rentPaymentId);
-    } else if (unitId && month && year) {
-      payment = await RentPayment.findOne({ unitId, month, year });
+    } else if (unitId) {
+      payment = await RentPayment.findOne({ unitId, month: currentMonth, year: currentYear });
     }
 
+    const unitFilter = mongoose.Types.ObjectId.isValid(unitId) ? { _id: unitId } : { unitCode: unitId };
+    const unit = await PropertyUnit.findOne(unitFilter);
+
     if (!payment) {
-      return res.status(404).json({ success: false, message: 'Rent payment record not found' });
+      payment = new RentPayment({
+        unitId: unit ? unit._id : undefined,
+        tenantName: unit?.tenant?.name || 'Tenant',
+        month: currentMonth,
+        year: currentYear,
+        dueDate: payDate,
+        baseRent: unit?.baseMonthlyRent || Number(amountReceived) || 0,
+        totalBilledAmount: unit?.baseMonthlyRent || Number(amountReceived) || 0,
+        amountPaid: 0,
+        status: 'Pending',
+      });
     }
 
     const previousPaid = payment.amountPaid || 0;
     const newlyReceived = Number(amountReceived);
     payment.amountPaid = previousPaid + newlyReceived;
-    payment.paymentDate = paymentDate ? new Date(paymentDate) : new Date();
+    payment.paymentDate = payDate;
     payment.paymentMethod = paymentMethod || 'Cash';
+    payment.status = 'Received';
     if (notes) payment.notes = notes;
 
     await payment.save();
 
-    // Direct Integration: Create or Update Primary Income Transaction
-    const unit = await PropertyUnit.findById(payment.unitId);
+    // Synchronize PropertyUnit rentStatus
+    if (unit) {
+      unit.rentStatus = 'Paid';
+      unit.lastReceivedDate = paymentDate || 'Today';
+      await unit.save();
+    }
     const unitLabel = unit ? unit.portionName : 'Rental Portion';
+    const baseRentIncome = Math.min(newlyReceived, payment.baseRent);
+    let incomeTx: any = null;
 
-    const incomeTx = await Transaction.create({
-      type: 'INCOME',
-      category: 'Rental Inflow',
-      amount: newlyReceived,
-      date: payment.paymentDate,
-      title: `Rental Inflow: ${unitLabel} (${payment.tenantName})`,
-      notes: `Rent collected for ${payment.month}/${payment.year}. Method: ${payment.paymentMethod}`,
-      paymentMethod: payment.paymentMethod,
-      sourceOrPayee: payment.tenantName,
-      referenceModel: 'RentPayment',
-      referenceId: payment._id,
-      year: payment.year,
-      month: payment.month,
-    });
+    if (baseRentIncome > 0) {
+      incomeTx = await Transaction.create({
+        type: 'INCOME',
+        category: 'Rental Inflow',
+        amount: baseRentIncome,
+        date: payment.paymentDate,
+        title: `Rental Inflow: ${unitLabel} (${payment.tenantName})`,
+        notes: `Base rent collected for ${payment.month}/${payment.year} (Gas & Electric utility splits excluded from income). Method: ${payment.paymentMethod}`,
+        paymentMethod: payment.paymentMethod,
+        sourceOrPayee: payment.tenantName,
+        referenceModel: 'RentPayment',
+        referenceId: payment._id,
+        year: payment.year,
+        month: payment.month,
+      });
 
-    payment.linkedTransactionId = incomeTx._id;
-    await payment.save();
+      payment.linkedTransactionId = incomeTx._id;
+      await payment.save();
+    }
 
     res.json({
       success: true,

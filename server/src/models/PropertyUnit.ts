@@ -19,7 +19,12 @@ export interface IPropertyUnit extends Document {
   electricSubMeterReading?: number; // Last recorded reading for utility splitting
   gasSubMeterReading?: number;
   fixedUtilityCharge?: number;
+  isElectricIncluded?: boolean; // Checkbox: checked = included in rent, unchecked = excluded
+  isGasIncluded?: boolean; // Checkbox: checked = included in rent, unchecked = excluded
   isOccupied: boolean;
+  rentStatus?: 'Paid' | 'Pending';
+  lastReceivedDate?: string;
+  ledgerHistory?: any[];
   tenant?: ITenantDetails;
   createdAt: Date;
   updatedAt: Date;
@@ -62,7 +67,16 @@ const PropertyUnitSchema = new Schema<IPropertyUnit>(
     electricSubMeterReading: { type: Number, default: 0, min: 0 },
     gasSubMeterReading: { type: Number, default: 0, min: 0 },
     fixedUtilityCharge: { type: Number, default: 0, min: 0 },
+    isElectricIncluded: { type: Boolean, default: false },
+    isGasIncluded: { type: Boolean, default: false },
     isOccupied: { type: Boolean, default: false },
+    rentStatus: {
+      type: String,
+      enum: ['Paid', 'Pending'],
+      default: 'Pending',
+    },
+    lastReceivedDate: { type: String, default: '' },
+    ledgerHistory: { type: [Schema.Types.Mixed] as any, default: [] },
     tenant: { type: TenantSchema, default: null },
   },
   {
@@ -70,7 +84,8 @@ const PropertyUnitSchema = new Schema<IPropertyUnit>(
   }
 );
 
-PropertyUnitSchema.index({ unitCode: 1 });
 PropertyUnitSchema.index({ isOccupied: 1 });
 
-export const PropertyUnit = mongoose.models.PropertyUnit || mongoose.model<IPropertyUnit>('PropertyUnit', PropertyUnitSchema);
+export const PropertyUnit =
+  (mongoose.models.PropertyUnit as mongoose.Model<IPropertyUnit>) ||
+  mongoose.model<IPropertyUnit>('PropertyUnit', PropertyUnitSchema);

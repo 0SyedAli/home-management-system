@@ -188,8 +188,9 @@ const CommitteeSchema = new Schema<ICommittee>(
 );
 
 export const Committee =
-  mongoose.models.Committee || mongoose.model<ICommittee>('Committee', CommitteeSchema);
+  (mongoose.models.Committee as mongoose.Model<ICommittee>) ||
+  mongoose.model<ICommittee>('Committee', CommitteeSchema);
 
 export const CommitteeMember =
-  mongoose.models.CommitteeMember ||
+  (mongoose.models.CommitteeMember as mongoose.Model<ICommitteeMember>) ||
   mongoose.model<ICommitteeMember>('CommitteeMember', CommitteeMemberSchema);
