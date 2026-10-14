@@ -112,10 +112,47 @@ export const api = {
     return safeFetch('/committees');
   },
 
+  getCommitteeMembers: async () => {
+    return safeFetch('/committees/members');
+  },
+
   createCommittee: async (data: any) => {
     return safeFetch('/committees', {
       method: 'POST',
       body: JSON.stringify(data),
+    });
+  },
+
+  createCommitteeMember: async (data: any) => {
+    return safeFetch('/committees/members', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  updateCommitteeMember: async (id: string, data: any) => {
+    return safeFetch(`/committees/members/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+
+  updateCommitteeMemberStatus: async (
+    id: string,
+    status?: string,
+    monthYear?: string,
+    amountPaid?: number,
+    notes?: string
+  ) => {
+    return safeFetch(`/committees/members/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status, monthYear, amountPaid, notes }),
+    });
+  },
+
+  deleteCommitteeMember: async (id: string) => {
+    return safeFetch(`/committees/members/${id}`, {
+      method: 'DELETE',
     });
   },
 

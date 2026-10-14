@@ -11,6 +11,8 @@ import dashboardRoutes from './routes/dashboardRoutes';
 
 const app = express();
 
+import mongoose from 'mongoose';
+
 // Middlewares
 app.use(cors({
   origin: true,
@@ -21,12 +23,23 @@ app.use(cors({
 app.options('*', cors());
 app.use(express.json());
 
+// Root Route for cPanel browser visits
+app.get('/', (_req, res) => {
+  res.json({
+    status: 'online',
+    service: 'Household Financial & Rental Management API',
+    database: mongoose.connection.readyState === 1 ? 'Connected (MongoDB Atlas)' : 'Connecting / Offline',
+    health: '/api/health',
+    timestamp: new Date().toISOString(),
+  });
+});
 
 // Base Health Check
 app.get('/api/health', (_req, res) => {
   res.json({
     status: 'online',
     service: 'Household Financial & Rental Management API',
+    database: mongoose.connection.readyState === 1 ? 'Connected (MongoDB Atlas)' : 'Connecting / Offline',
     timestamp: new Date().toISOString(),
   });
 });

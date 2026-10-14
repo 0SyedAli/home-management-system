@@ -5,11 +5,13 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   LayoutGrid,
-  Home,
-  Users,
-  TrendingUp,
   Receipt,
+  TrendingUp,
+  Users,
+  Zap,
+  BarChart3,
   Settings,
+  UserCheck,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -22,10 +24,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
 
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutGrid, href: '/' },
-    { id: 'rental', label: 'Rental Portions', icon: Home, href: '/rental' },
-    { id: 'committee', label: 'Committee (Kameti)', icon: Users, href: '/committee' },
-    { id: 'investments', label: 'Investments', icon: TrendingUp, href: '/investments' },
     { id: 'expenses', label: 'Expenses', icon: Receipt, href: '/expenses' },
+    { id: 'income', label: 'Income', icon: TrendingUp, href: '/investments' },
+    { id: 'members', label: 'Members', icon: UserCheck, href: '/rental' },
+    { id: 'utilities', label: 'Bills & Utilities', icon: Zap, href: '/rental' },
+    { id: 'committee', label: 'Committee Management', icon: Users, href: '/committee' },
+    { id: 'reports', label: 'Reports', icon: BarChart3, href: '/expenses' },
     { id: 'settings', label: 'Settings', icon: Settings, href: '/settings' },
   ];
 

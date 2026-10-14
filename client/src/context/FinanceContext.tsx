@@ -14,21 +14,51 @@ import {
   deletePortion as deletePortionAction,
   addLedgerEntry as addLedgerEntryAction,
   toggleCommitteeStatus as toggleCommitteeStatusAction,
+  recordCommitteePayment as recordCommitteePaymentAction,
+  updateCommitteeMember as updateCommitteeMemberAction,
   addCommitteeMember as addCommitteeMemberAction,
   deleteCommitteeMember as deleteCommitteeMemberAction,
   addExpense as addExpenseAction,
   deleteExpense as deleteExpenseAction,
   addInvestment as addInvestmentAction,
   deleteInvestment as deleteInvestmentAction,
+  addCommitteeLocation as addCommitteeLocationAction,
+  updateCommitteeLocation as updateCommitteeLocationAction,
+  deleteCommitteeLocation as deleteCommitteeLocationAction,
+  addIndividualCommittee as addIndividualCommitteeAction,
+  updateIndividualCommittee as updateIndividualCommitteeAction,
+  deleteIndividualCommittee as deleteIndividualCommitteeAction,
+  recordInstallmentPayment as recordInstallmentPaymentAction,
+  bulkPayLocationCurrentMonth as bulkPayLocationCurrentMonthAction,
   hydrateFromServer,
   rehydrateFromStorage,
   resetToFreshState as resetToFreshStateAction,
   setApiStatus,
 } from '../redux/financeSlice';
-import { Portion, TenantLedgerEntry, CommitteeMember, ExpenseItem, InvestmentItem } from '../redux/types';
+import {
+  Portion,
+  TenantLedgerEntry,
+  CommitteeMember,
+  ExpenseItem,
+  InvestmentItem,
+  CommitteeLocation,
+  IndividualCommittee,
+  ScheduledInstallment,
+  CommitteePaymentTransaction,
+} from '../redux/types';
 import { api } from '../redux/api';
 
-export type { Portion, TenantLedgerEntry, CommitteeMember, ExpenseItem, InvestmentItem };
+export type {
+  Portion,
+  TenantLedgerEntry,
+  CommitteeMember,
+  ExpenseItem,
+  InvestmentItem,
+  CommitteeLocation,
+  IndividualCommittee,
+  ScheduledInstallment,
+  CommitteePaymentTransaction,
+};
 
 interface FinanceContextType {
   householdName: string;
@@ -62,8 +92,60 @@ interface FinanceContextType {
   // Committee
   committeeMembers: CommitteeMember[];
   toggleCommitteeStatus: (memberId: string) => void;
+  recordCommitteePayment: (
+    memberId: string,
+    status?: 'Paid' | 'Partial' | 'Pending',
+    amountPaid?: number,
+    notes?: string
+  ) => void;
+  updateCommitteeMember: (memberId: string, data: Partial<CommitteeMember>) => void;
   addCommitteeMember: (member: Omit<CommitteeMember, 'id'>) => void;
   deleteCommitteeMember: (memberId: string) => void;
+
+  // Committee Locations & Individual Committees Module
+  committeeLocations: CommitteeLocation[];
+  individualCommittees: IndividualCommittee[];
+  addCommitteeLocation: (loc: Omit<CommitteeLocation, 'id'>) => void;
+  updateCommitteeLocation: (id: string, data: Partial<CommitteeLocation>) => void;
+  deleteCommitteeLocation: (id: string) => void;
+  addIndividualCommittee: (committee: {
+    locationId: string;
+    locationName: string;
+    name: string;
+    membersCount: number;
+    sharePerMember?: number;
+    monthlyAmount: number;
+    startMonth: string;
+    durationMonths: number;
+    notes?: string;
+    color?: string;
+  }) => void;
+  updateIndividualCommittee: (id: string, data: Partial<IndividualCommittee>) => void;
+  deleteIndividualCommittee: (id: string) => void;
+  recordInstallmentPayment: (params: {
+    committeeId: string;
+    installmentId?: string;
+    monthKey?: string;
+    monthYear?: string;
+    amount: number;
+    paymentDate?: string;
+    paymentMethod?: string;
+    notes?: string;
+    referenceNo?: string;
+    isOverride?: boolean;
+  }) => void;
+  bulkPayLocationCurrentMonth: (params: {
+    locationId: string;
+    monthKey?: string;
+    paymentDate?: string;
+  }) => void;
+
+  // Additional Computed Metrics for Committee Module
+  totalLocationsCount: number;
+  totalIndividualCommitteesCount: number;
+  totalActiveCommitteesCount: number;
+  totalAllCommitteesLifecycleValue: number;
+  totalMonthlyCommitteesPool: number;
 
   // Expenses
   expenses: ExpenseItem[];
@@ -172,6 +254,28 @@ const FinanceProviderInner: React.FC<{ children: React.ReactNode }> = ({ childre
               currentValuation: i.currentValuation || 0,
             }));
             dispatch(hydrateFromServer({ investments: mappedInvestments }));
+          }
+
+          const commResData = (commRes.data as any)?.data || commRes.data;
+          if (commResData && Array.isArray(commResData) && commResData.length > 0) {
+            const now = new Date();
+            const currentMonthYear = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+            const mappedMembers: CommitteeMember[] = commResData.map((m: any) => {
+              const history = m.paymentHistory || [];
+              const currentRecord = history.find((p: any) => p.monthYear === currentMonthYear);
+              return {
+                id: m._id || m.id,
+                _id: m._id,
+                name: m.memberName || m.name,
+                monthlyInstallment: m.monthlyInstallment || 0,
+                startDate: m.startDate,
+                endDate: m.endDate,
+                payoutMonth: m.payoutMonth || 'Not Specified',
+                status: currentRecord ? currentRecord.status : (m.status || 'Pending'),
+                paymentHistory: history,
+              };
+            });
+            dispatch(hydrateFromServer({ committeeMembers: mappedMembers }));
           }
         } catch (e) {
           console.log('Background server sync paused; using local cached state');
@@ -329,14 +433,121 @@ const FinanceProviderInner: React.FC<{ children: React.ReactNode }> = ({ childre
   // Committee
   const toggleCommitteeStatus = (memberId: string) => {
     dispatch(toggleCommitteeStatusAction(memberId));
+    const member = financeState.committeeMembers.find((m) => m.id === memberId || m._id === memberId);
+    const targetId = member?._id || memberId;
+    const now = new Date();
+    const currentMonthYear = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const nextStatus = member?.status === 'Paid' ? 'Pending' : 'Paid';
+    api.updateCommitteeMemberStatus(targetId, nextStatus, currentMonthYear).catch(() => {});
+  };
+
+  const recordCommitteePayment = (
+    memberId: string,
+    status?: 'Paid' | 'Partial' | 'Pending',
+    amountPaid?: number,
+    notes?: string
+  ) => {
+    dispatch(recordCommitteePaymentAction({ id: memberId, status, amountPaid, notes }));
+    const member = financeState.committeeMembers.find((m) => m.id === memberId || m._id === memberId);
+    const targetId = member?._id || memberId;
+    const now = new Date();
+    const currentMonthYear = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    api.updateCommitteeMemberStatus(targetId, status, currentMonthYear, amountPaid, notes).catch(() => {});
+  };
+
+  const updateCommitteeMember = (memberId: string, data: Partial<CommitteeMember>) => {
+    dispatch(updateCommitteeMemberAction({ id: memberId, data }));
+    const member = financeState.committeeMembers.find((m) => m.id === memberId || m._id === memberId);
+    const targetId = member?._id || memberId;
+    api.updateCommitteeMember(targetId, {
+      name: data.name,
+      memberName: data.name,
+      monthlyInstallment: data.monthlyInstallment,
+      startDate: data.startDate,
+      endDate: data.endDate,
+      payoutMonth: data.payoutMonth,
+      notes: data.notes,
+    }).catch(() => {});
   };
 
   const addCommitteeMember = (member: Omit<CommitteeMember, 'id'>) => {
     dispatch(addCommitteeMemberAction(member));
+    api.createCommitteeMember({
+      name: member.name,
+      monthlyInstallment: member.monthlyInstallment,
+      startDate: member.startDate,
+      endDate: member.endDate,
+      payoutMonth: member.payoutMonth,
+    }).catch(() => {});
   };
 
   const deleteCommitteeMember = (memberId: string) => {
+    const member = financeState.committeeMembers.find((m) => m.id === memberId || m._id === memberId);
+    const targetId = member?._id || memberId;
     dispatch(deleteCommitteeMemberAction(memberId));
+    api.deleteCommitteeMember(targetId).catch(() => {});
+  };
+
+  // Committee Locations & Individual Committees Module Handlers
+  const addCommitteeLocation = (loc: Omit<CommitteeLocation, 'id'>) => {
+    dispatch(addCommitteeLocationAction(loc));
+  };
+
+  const updateCommitteeLocation = (id: string, data: Partial<CommitteeLocation>) => {
+    dispatch(updateCommitteeLocationAction({ id, data }));
+  };
+
+  const deleteCommitteeLocation = (id: string) => {
+    dispatch(deleteCommitteeLocationAction(id));
+  };
+
+  const addIndividualCommittee = (committee: {
+    locationId: string;
+    locationName: string;
+    name: string;
+    membersCount: number;
+    sharePerMember?: number;
+    monthlyAmount: number;
+    startMonth: string;
+    durationMonths: number;
+    endMonth?: string;
+    notes?: string;
+    color?: string;
+    myCommitteeMonth?: string;
+    payoutAmount?: number;
+  }) => {
+    dispatch(addIndividualCommitteeAction(committee));
+  };
+
+  const updateIndividualCommittee = (id: string, data: Partial<IndividualCommittee>) => {
+    dispatch(updateIndividualCommitteeAction({ id, data }));
+  };
+
+  const deleteIndividualCommittee = (id: string) => {
+    dispatch(deleteIndividualCommitteeAction(id));
+  };
+
+  const recordInstallmentPayment = (params: {
+    committeeId: string;
+    installmentId?: string;
+    monthKey?: string;
+    monthYear?: string;
+    amount: number;
+    paymentDate?: string;
+    paymentMethod?: string;
+    notes?: string;
+    referenceNo?: string;
+    isOverride?: boolean;
+  }) => {
+    dispatch(recordInstallmentPaymentAction(params));
+  };
+
+  const bulkPayLocationCurrentMonth = (params: {
+    locationId: string;
+    monthKey?: string;
+    paymentDate?: string;
+  }) => {
+    dispatch(bulkPayLocationCurrentMonthAction(params));
   };
 
   // Expenses
@@ -377,7 +588,7 @@ const FinanceProviderInner: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   // Computed Totals (High Performance with useMemo)
-  const { portions, committeeMembers, expenses, investments, salary } = financeState;
+  const { portions, committeeMembers, committeeLocations, individualCommittees, expenses, investments, salary } = financeState;
 
   const totalRentExpected = useMemo(() => {
     return portions.reduce((sum, p) => sum + (p.monthlyRent || 0), 0);
@@ -418,9 +629,12 @@ const FinanceProviderInner: React.FC<{ children: React.ReactNode }> = ({ childre
   }, [committeeMembers]);
 
   const totalCommitteeCollected = useMemo(() => {
-    return committeeMembers
-      .filter((m) => m.status === 'Paid')
-      .reduce((sum, m) => sum + (m.monthlyInstallment || 0), 0);
+    return committeeMembers.reduce((sum, m) => {
+      if (m.currentMonthPaidAmount !== undefined) {
+        return sum + (m.currentMonthPaidAmount || 0);
+      }
+      return sum + (m.status === 'Paid' ? (m.monthlyInstallment || 0) : 0);
+    }, 0);
   }, [committeeMembers]);
 
   const totalUtilitiesElectricGas = useMemo(() => {
@@ -430,6 +644,27 @@ const FinanceProviderInner: React.FC<{ children: React.ReactNode }> = ({ childre
   const totalSolarRent = useMemo(() => {
     return portions.reduce((sum, p) => sum + (p.solarRent || 0), 0);
   }, [portions]);
+
+  // Committee Module Computed Metrics
+  const totalLocationsCount = useMemo(() => {
+    return committeeLocations.length;
+  }, [committeeLocations]);
+
+  const totalIndividualCommitteesCount = useMemo(() => {
+    return individualCommittees.length;
+  }, [individualCommittees]);
+
+  const totalActiveCommitteesCount = useMemo(() => {
+    return individualCommittees.filter((c) => c.status !== 'Completed').length;
+  }, [individualCommittees]);
+
+  const totalAllCommitteesLifecycleValue = useMemo(() => {
+    return individualCommittees.reduce((sum, c) => sum + (c.totalExpectedAmount || 0), 0);
+  }, [individualCommittees]);
+
+  const totalMonthlyCommitteesPool = useMemo(() => {
+    return individualCommittees.reduce((sum, c) => sum + (c.monthlyAmount || 0), 0);
+  }, [individualCommittees]);
 
   return (
     <FinanceContext.Provider
@@ -449,8 +684,25 @@ const FinanceProviderInner: React.FC<{ children: React.ReactNode }> = ({ childre
         addLedgerEntry,
         committeeMembers,
         toggleCommitteeStatus,
+        recordCommitteePayment,
+        updateCommitteeMember,
         addCommitteeMember,
         deleteCommitteeMember,
+        committeeLocations,
+        individualCommittees,
+        addCommitteeLocation,
+        updateCommitteeLocation,
+        deleteCommitteeLocation,
+        addIndividualCommittee,
+        updateIndividualCommittee,
+        deleteIndividualCommittee,
+        recordInstallmentPayment,
+        bulkPayLocationCurrentMonth,
+        totalLocationsCount,
+        totalIndividualCommitteesCount,
+        totalActiveCommitteesCount,
+        totalAllCommitteesLifecycleValue,
+        totalMonthlyCommitteesPool,
         expenses,
         addExpense,
         deleteExpense,

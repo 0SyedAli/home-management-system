@@ -14,6 +14,7 @@ const investmentRoutes_1 = __importDefault(require("./routes/investmentRoutes"))
 const committeeRoutes_1 = __importDefault(require("./routes/committeeRoutes"));
 const dashboardRoutes_1 = __importDefault(require("./routes/dashboardRoutes"));
 const app = (0, express_1.default)();
+const mongoose_1 = __importDefault(require("mongoose"));
 // Middlewares
 app.use((0, cors_1.default)({
     origin: true,
@@ -23,11 +24,22 @@ app.use((0, cors_1.default)({
 }));
 app.options('*', (0, cors_1.default)());
 app.use(express_1.default.json());
+// Root Route for cPanel browser visits
+app.get('/', (_req, res) => {
+    res.json({
+        status: 'online',
+        service: 'Household Financial & Rental Management API',
+        database: mongoose_1.default.connection.readyState === 1 ? 'Connected (MongoDB Atlas)' : 'Connecting / Offline',
+        health: '/api/health',
+        timestamp: new Date().toISOString(),
+    });
+});
 // Base Health Check
 app.get('/api/health', (_req, res) => {
     res.json({
         status: 'online',
         service: 'Household Financial & Rental Management API',
+        database: mongoose_1.default.connection.readyState === 1 ? 'Connected (MongoDB Atlas)' : 'Connecting / Offline',
         timestamp: new Date().toISOString(),
     });
 });

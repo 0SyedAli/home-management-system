@@ -52,11 +52,23 @@ const MonthlyContributionSchema = new mongoose_1.Schema({
     paymentMethod: { type: String, default: 'Cash' },
     notes: { type: String, trim: true },
 }, { _id: true });
+const CommitteePaymentRecordSchema = new mongoose_1.Schema({
+    monthYear: { type: String, required: true },
+    status: {
+        type: String,
+        enum: ['Paid', 'Partial', 'Pending'],
+        default: 'Pending',
+    },
+    paidDate: { type: Date },
+    amountPaid: { type: Number, default: 0 },
+    remainingDue: { type: Number, default: 0 },
+    notes: { type: String, trim: true },
+}, { _id: false });
 const CommitteeMemberSchema = new mongoose_1.Schema({
     committeeId: {
         type: mongoose_1.Schema.Types.ObjectId,
         ref: 'Committee',
-        required: true,
+        required: false,
         index: true,
     },
     memberName: {
@@ -73,14 +85,52 @@ const CommitteeMemberSchema = new mongoose_1.Schema({
         required: true,
         min: 0,
     },
+    startDate: {
+        type: String,
+        default: () => {
+            const d = new Date();
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        },
+    },
+    endDate: {
+        type: String,
+        default: () => {
+            const d = new Date();
+            d.setFullYear(d.getFullYear() + 1);
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        },
+    },
+    payoutMonth: {
+        type: String,
+        required: true,
+        trim: true,
+    },
+    status: {
+        type: String,
+        enum: ['Paid', 'Partial', 'Pending'],
+        default: 'Pending',
+        index: true,
+    },
+    currentMonthPaidAmount: {
+        type: Number,
+        default: 0,
+    },
+    currentMonthRemainingDue: {
+        type: Number,
+        default: 0,
+    },
+    paymentHistory: {
+        type: [CommitteePaymentRecordSchema],
+        default: [],
+    },
     payoutMonthIndex: {
         type: Number,
-        required: true,
+        default: 1,
         min: 1,
     },
     scheduledPayoutDate: {
         type: Date,
-        required: true,
+        required: false,
     },
     isPayoutCompleted: {
         type: Boolean,
@@ -92,7 +142,7 @@ const CommitteeMemberSchema = new mongoose_1.Schema({
     },
     payoutAmount: {
         type: Number,
-        required: true,
+        default: 0,
         min: 0,
     },
     notes: {

@@ -18,16 +18,32 @@ export interface IMonthlyContribution {
   notes?: string;
 }
 
+export interface ICommitteePaymentRecord {
+  monthYear: string; // e.g. "2026-10"
+  status: 'Paid' | 'Partial' | 'Pending';
+  paidDate?: Date;
+  amountPaid: number;
+  remainingDue?: number;
+  notes?: string;
+}
+
 export interface ICommitteeMember extends Document {
-  committeeId: Types.ObjectId;
+  committeeId?: Types.ObjectId;
   memberName: string;
   phone?: string;
   monthlyInstallment: number;
-  payoutMonthIndex: number; // e.g., 1 for 1st payout (niklne ka mahina)
-  scheduledPayoutDate: Date;
-  isPayoutCompleted: boolean;
+  startDate?: string; // e.g. "2026-10"
+  endDate?: string;   // e.g. "2027-09"
+  payoutMonth: string; // e.g. "March 2027"
+  status: 'Paid' | 'Partial' | 'Pending'; // Current month status
+  currentMonthPaidAmount?: number;
+  currentMonthRemainingDue?: number;
+  paymentHistory: ICommitteePaymentRecord[];
+  payoutMonthIndex?: number; // e.g., 1 for 1st payout
+  scheduledPayoutDate?: Date;
+  isPayoutCompleted?: boolean;
   actualPayoutDate?: Date;
-  payoutAmount: number;
+  payoutAmount?: number;
   notes?: string;
   contributions: IMonthlyContribution[];
   totalContributedToDate: number;
@@ -71,12 +87,28 @@ const MonthlyContributionSchema = new Schema<IMonthlyContribution>(
   { _id: true }
 );
 
+const CommitteePaymentRecordSchema = new Schema<ICommitteePaymentRecord>(
+  {
+    monthYear: { type: String, required: true },
+    status: {
+      type: String,
+      enum: ['Paid', 'Partial', 'Pending'],
+      default: 'Pending',
+    },
+    paidDate: { type: Date },
+    amountPaid: { type: Number, default: 0 },
+    remainingDue: { type: Number, default: 0 },
+    notes: { type: String, trim: true },
+  },
+  { _id: false }
+);
+
 const CommitteeMemberSchema = new Schema<ICommitteeMember>(
   {
     committeeId: {
       type: Schema.Types.ObjectId,
       ref: 'Committee',
-      required: true,
+      required: false,
       index: true,
     },
     memberName: {
@@ -93,14 +125,52 @@ const CommitteeMemberSchema = new Schema<ICommitteeMember>(
       required: true,
       min: 0,
     },
+    startDate: {
+      type: String,
+      default: () => {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      },
+    },
+    endDate: {
+      type: String,
+      default: () => {
+        const d = new Date();
+        d.setFullYear(d.getFullYear() + 1);
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      },
+    },
+    payoutMonth: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    status: {
+      type: String,
+      enum: ['Paid', 'Partial', 'Pending'],
+      default: 'Pending',
+      index: true,
+    },
+    currentMonthPaidAmount: {
+      type: Number,
+      default: 0,
+    },
+    currentMonthRemainingDue: {
+      type: Number,
+      default: 0,
+    },
+    paymentHistory: {
+      type: [CommitteePaymentRecordSchema],
+      default: [],
+    },
     payoutMonthIndex: {
       type: Number,
-      required: true,
+      default: 1,
       min: 1,
     },
     scheduledPayoutDate: {
       type: Date,
-      required: true,
+      required: false,
     },
     isPayoutCompleted: {
       type: Boolean,
@@ -112,7 +182,7 @@ const CommitteeMemberSchema = new Schema<ICommitteeMember>(
     },
     payoutAmount: {
       type: Number,
-      required: true,
+      default: 0,
       min: 0,
     },
     notes: {

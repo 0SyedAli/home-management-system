@@ -32,11 +32,13 @@ export const RentCollectionCard: React.FC = () => {
   const [gasBill, setGasBill] = useState<string>('');
   const [remarks, setRemarks] = useState<string>('');
 
-  // Open modal with ALL fields strictly empty
+  // Open modal with monthly rent pre-filled, today's date auto-selected, and gas, bijli, remarks empty
   const handleOpenCollectModal = (portion: Portion) => {
     setSelectedPortion(portion);
-    setMonthlyRent('');
-    setCollectDate('');
+    setMonthlyRent(portion.monthlyRent ? String(portion.monthlyRent) : '');
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    setCollectDate(todayStr);
     setElectricBill('');
     setGasBill('');
     setRemarks('');

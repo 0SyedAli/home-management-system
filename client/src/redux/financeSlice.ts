@@ -1,7 +1,25 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
-import { Portion, CommitteeMember, ExpenseItem, InvestmentItem, TenantLedgerEntry, FinanceState } from './types';
+import {
+  Portion,
+  CommitteeMember,
+  CommitteePaymentRecord,
+  ExpenseItem,
+  InvestmentItem,
+  TenantLedgerEntry,
+  FinanceState,
+  CommitteeLocation,
+  IndividualCommittee,
+  CommitteePaymentTransaction,
+} from './types';
+import {
+  DEFAULT_LOCATIONS,
+  createDefaultCommittees,
+  recalculateCommittee,
+  generateInstallments,
+  calculateEndMonth,
+} from '../utils/committeeHelpers';
 
-const STORAGE_KEY = 'home_finance_state_v2';
+const STORAGE_KEY = 'home_finance_state_v3';
 
 const defaultPortions: Portion[] = [];
 const defaultCommitteeMembers: CommitteeMember[] = [];
@@ -18,6 +36,8 @@ const saveToLocalStorage = (state: FinanceState) => {
         salary: state.salary,
         portions: state.portions,
         committeeMembers: state.committeeMembers,
+        committeeLocations: state.committeeLocations,
+        individualCommittees: state.individualCommittees,
         expenses: state.expenses,
         investments: state.investments,
         lastSyncedAt: state.lastSyncedAt,
@@ -35,6 +55,8 @@ const defaultState: FinanceState = {
   salary: 0,
   portions: defaultPortions,
   committeeMembers: defaultCommitteeMembers,
+  committeeLocations: DEFAULT_LOCATIONS,
+  individualCommittees: createDefaultCommittees(),
   expenses: defaultExpenses,
   investments: defaultInvestments,
   isLoading: false,
@@ -53,6 +75,9 @@ export const financeSlice = createSlice({
           if (localStorage.getItem('home_finance_state_v1')) {
             localStorage.removeItem('home_finance_state_v1');
           }
+          if (localStorage.getItem('home_finance_state_v2')) {
+            localStorage.removeItem('home_finance_state_v2');
+          }
 
           const cached = localStorage.getItem(STORAGE_KEY);
           if (cached) {
@@ -64,7 +89,23 @@ export const financeSlice = createSlice({
               state.portions = parsed.portions;
             }
             if (parsed.committeeMembers && Array.isArray(parsed.committeeMembers)) {
-              state.committeeMembers = parsed.committeeMembers;
+              const now = new Date();
+              const currentMonthYear = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+              state.committeeMembers = parsed.committeeMembers.map((m: CommitteeMember) => {
+                const history = m.paymentHistory || [];
+                const currentRecord = history.find((p) => p.monthYear === currentMonthYear);
+                return {
+                  ...m,
+                  status: currentRecord ? currentRecord.status : 'Pending',
+                  paymentHistory: history,
+                };
+              });
+            }
+            if (parsed.committeeLocations && Array.isArray(parsed.committeeLocations)) {
+              state.committeeLocations = parsed.committeeLocations;
+            }
+            if (parsed.individualCommittees && Array.isArray(parsed.individualCommittees)) {
+              state.individualCommittees = parsed.individualCommittees;
             }
             if (parsed.expenses && Array.isArray(parsed.expenses)) {
               state.expenses = parsed.expenses;
@@ -85,6 +126,8 @@ export const financeSlice = createSlice({
       state.salary = 0;
       state.portions = [];
       state.committeeMembers = [];
+      state.committeeLocations = DEFAULT_LOCATIONS;
+      state.individualCommittees = createDefaultCommittees();
       state.expenses = [];
       state.investments = [];
       state.lastSyncedAt = null;
@@ -241,23 +284,427 @@ export const financeSlice = createSlice({
 
     // Committee Members
     toggleCommitteeStatus: (state, action: PayloadAction<string>) => {
-      const member = state.committeeMembers.find((m) => m.id === action.payload);
+      const member = state.committeeMembers.find((m) => m.id === action.payload || m._id === action.payload);
       if (member) {
-        member.status = member.status === 'Paid' ? 'Pending' : 'Paid';
+        const nextStatus = member.status === 'Paid' ? 'Pending' : 'Paid';
+        member.status = nextStatus;
+        const paidAmt = nextStatus === 'Paid' ? member.monthlyInstallment : 0;
+        const remDue = nextStatus === 'Paid' ? 0 : member.monthlyInstallment;
+        member.currentMonthPaidAmount = paidAmt;
+        member.currentMonthRemainingDue = remDue;
+
+        const now = new Date();
+        const currentMonthYear = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        if (!member.paymentHistory) {
+          member.paymentHistory = [];
+        }
+        const recordIndex = member.paymentHistory.findIndex((p) => p.monthYear === currentMonthYear);
+        if (recordIndex !== -1) {
+          member.paymentHistory[recordIndex].status = nextStatus;
+          member.paymentHistory[recordIndex].paidDate = nextStatus === 'Paid' ? now.toISOString().split('T')[0] : undefined;
+          member.paymentHistory[recordIndex].amountPaid = paidAmt;
+          member.paymentHistory[recordIndex].remainingDue = remDue;
+        } else {
+          member.paymentHistory.push({
+            monthYear: currentMonthYear,
+            status: nextStatus,
+            paidDate: nextStatus === 'Paid' ? now.toISOString().split('T')[0] : undefined,
+            amountPaid: paidAmt,
+            remainingDue: remDue,
+          });
+        }
+      }
+      saveToLocalStorage(state);
+    },
+
+    recordCommitteePayment: (
+      state,
+      action: PayloadAction<{
+        id: string;
+        status?: 'Paid' | 'Partial' | 'Pending';
+        amountPaid?: number;
+        monthYear?: string;
+        notes?: string;
+      }>
+    ) => {
+      const { id, status, amountPaid, monthYear, notes } = action.payload;
+      const member = state.committeeMembers.find((m) => m.id === id || m._id === id);
+      if (member) {
+        const now = new Date();
+        const currentMonthYear = monthYear || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+        let nextStatus: 'Paid' | 'Partial' | 'Pending' = 'Pending';
+        let paidAmt = 0;
+        let remDue = member.monthlyInstallment;
+
+        if (amountPaid !== undefined) {
+          paidAmt = Number(amountPaid) || 0;
+          if (paidAmt >= member.monthlyInstallment) {
+            nextStatus = 'Paid';
+            paidAmt = member.monthlyInstallment;
+            remDue = 0;
+          } else if (paidAmt > 0) {
+            nextStatus = 'Partial';
+            remDue = Math.max(0, member.monthlyInstallment - paidAmt);
+          } else {
+            nextStatus = 'Pending';
+            paidAmt = 0;
+            remDue = member.monthlyInstallment;
+          }
+        } else if (status) {
+          nextStatus = status;
+          if (nextStatus === 'Paid') {
+            paidAmt = member.monthlyInstallment;
+            remDue = 0;
+          } else if (nextStatus === 'Partial') {
+            paidAmt = member.currentMonthPaidAmount || Math.round(member.monthlyInstallment / 2);
+            remDue = Math.max(0, member.monthlyInstallment - paidAmt);
+          } else {
+            paidAmt = 0;
+            remDue = member.monthlyInstallment;
+          }
+        } else {
+          nextStatus = member.status === 'Paid' ? 'Pending' : 'Paid';
+          paidAmt = nextStatus === 'Paid' ? member.monthlyInstallment : 0;
+          remDue = nextStatus === 'Paid' ? 0 : member.monthlyInstallment;
+        }
+
+        member.status = nextStatus;
+        member.currentMonthPaidAmount = paidAmt;
+        member.currentMonthRemainingDue = remDue;
+        if (notes !== undefined) member.notes = notes;
+
+        if (!member.paymentHistory) {
+          member.paymentHistory = [];
+        }
+
+        const recordIndex = member.paymentHistory.findIndex((p) => p.monthYear === currentMonthYear);
+        const newRecord: CommitteePaymentRecord = {
+          monthYear: currentMonthYear,
+          status: nextStatus,
+          paidDate: nextStatus !== 'Pending' ? now.toISOString().split('T')[0] : undefined,
+          amountPaid: paidAmt,
+          remainingDue: remDue,
+          notes: notes !== undefined ? notes : (recordIndex !== -1 ? member.paymentHistory[recordIndex].notes : ''),
+        };
+
+        if (recordIndex !== -1) {
+          member.paymentHistory[recordIndex] = newRecord;
+        } else {
+          member.paymentHistory.push(newRecord);
+        }
+      }
+      saveToLocalStorage(state);
+    },
+
+    updateCommitteeMember: (state, action: PayloadAction<{ id: string; data: Partial<CommitteeMember> }>) => {
+      const index = state.committeeMembers.findIndex((m) => m.id === action.payload.id || m._id === action.payload.id);
+      if (index !== -1) {
+        state.committeeMembers[index] = { ...state.committeeMembers[index], ...action.payload.data };
       }
       saveToLocalStorage(state);
     },
 
     addCommitteeMember: (state, action: PayloadAction<Omit<CommitteeMember, 'id'>>) => {
-      state.committeeMembers.push({
+      const now = new Date();
+      const currentMonthYear = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const newMember: CommitteeMember = {
         ...action.payload,
         id: `cm-${Date.now()}`,
-      });
+        status: action.payload.status || 'Pending',
+        currentMonthPaidAmount: action.payload.status === 'Paid' ? action.payload.monthlyInstallment : 0,
+        currentMonthRemainingDue: action.payload.status === 'Paid' ? 0 : action.payload.monthlyInstallment,
+        paymentHistory: action.payload.paymentHistory || [
+          {
+            monthYear: currentMonthYear,
+            status: action.payload.status || 'Pending',
+            amountPaid: action.payload.status === 'Paid' ? action.payload.monthlyInstallment : 0,
+            remainingDue: action.payload.status === 'Paid' ? 0 : action.payload.monthlyInstallment,
+          },
+        ],
+      };
+      state.committeeMembers.push(newMember);
       saveToLocalStorage(state);
     },
 
     deleteCommitteeMember: (state, action: PayloadAction<string>) => {
-      state.committeeMembers = state.committeeMembers.filter((m) => m.id !== action.payload);
+      state.committeeMembers = state.committeeMembers.filter((m) => m.id !== action.payload && m._id !== action.payload);
+      saveToLocalStorage(state);
+    },
+
+    // Committee Locations Management
+    addCommitteeLocation: (state, action: PayloadAction<Omit<CommitteeLocation, 'id'>>) => {
+      const newLoc: CommitteeLocation = {
+        ...action.payload,
+        id: `loc-${Date.now()}`,
+      };
+      state.committeeLocations.push(newLoc);
+      saveToLocalStorage(state);
+    },
+
+    updateCommitteeLocation: (state, action: PayloadAction<{ id: string; data: Partial<CommitteeLocation> }>) => {
+      const idx = state.committeeLocations.findIndex((l) => l.id === action.payload.id || l._id === action.payload.id);
+      if (idx !== -1) {
+        state.committeeLocations[idx] = { ...state.committeeLocations[idx], ...action.payload.data };
+        if (action.payload.data.name) {
+          state.individualCommittees.forEach((c) => {
+            if (c.locationId === action.payload.id) {
+              c.locationName = action.payload.data.name!;
+            }
+          });
+        }
+      }
+      saveToLocalStorage(state);
+    },
+
+    deleteCommitteeLocation: (state, action: PayloadAction<string>) => {
+      state.committeeLocations = state.committeeLocations.filter(
+        (l) => l.id !== action.payload && l._id !== action.payload
+      );
+      state.individualCommittees = state.individualCommittees.filter(
+        (c) => c.locationId !== action.payload
+      );
+      saveToLocalStorage(state);
+    },
+
+    // Individual Committees Management
+    addIndividualCommittee: (
+      state,
+      action: PayloadAction<{
+        locationId: string;
+        locationName: string;
+        name: string;
+        membersCount: number;
+        sharePerMember?: number;
+        monthlyAmount: number;
+        startMonth: string;
+        durationMonths: number;
+        endMonth?: string;
+        notes?: string;
+        color?: string;
+        myCommitteeMonth?: string;
+        payoutAmount?: number;
+      }>
+    ) => {
+      const {
+        locationId,
+        locationName,
+        name,
+        membersCount,
+        sharePerMember,
+        monthlyAmount,
+        startMonth,
+        durationMonths,
+        notes,
+        color,
+        myCommitteeMonth,
+        payoutAmount,
+      } = action.payload;
+
+      const newId = `c-${Date.now()}`;
+      const endMonth = calculateEndMonth(startMonth, durationMonths);
+      const installments = generateInstallments(newId, startMonth, durationMonths, monthlyAmount);
+
+      const committee: IndividualCommittee = {
+        id: newId,
+        locationId,
+        locationName,
+        name,
+        membersCount: membersCount || 20,
+        sharePerMember: sharePerMember || Math.round(monthlyAmount / (membersCount || 20)),
+        monthlyAmount,
+        startMonth,
+        endMonth,
+        durationMonths,
+        totalExpectedAmount: monthlyAmount * durationMonths,
+        totalPaidAmount: 0,
+        paidMonthsCount: 0,
+        status: 'Pending',
+        myCommitteeMonth,
+        payoutAmount: payoutAmount || (monthlyAmount * durationMonths),
+        isMyPayoutReceived: false,
+        installments,
+        notes,
+        color: color || 'blue',
+        createdAt: new Date().toISOString(),
+      };
+
+      state.individualCommittees.push(committee);
+      saveToLocalStorage(state);
+    },
+
+    updateIndividualCommittee: (
+      state,
+      action: PayloadAction<{ id: string; data: Partial<IndividualCommittee> }>
+    ) => {
+      const idx = state.individualCommittees.findIndex((c) => c.id === action.payload.id);
+      if (idx !== -1) {
+        const current = state.individualCommittees[idx];
+        const updated = { ...current, ...action.payload.data };
+
+        if (
+          (action.payload.data.durationMonths && action.payload.data.durationMonths !== current.durationMonths) ||
+          (action.payload.data.startMonth && action.payload.data.startMonth !== current.startMonth) ||
+          (action.payload.data.monthlyAmount && action.payload.data.monthlyAmount !== current.monthlyAmount)
+        ) {
+          const newStart = updated.startMonth;
+          const newDuration = updated.durationMonths;
+          const newAmount = updated.monthlyAmount;
+          updated.endMonth = calculateEndMonth(newStart, newDuration);
+
+          const newInstallments = generateInstallments(current.id, newStart, newDuration, newAmount);
+          newInstallments.forEach((newInst) => {
+            const oldInst = current.installments.find((oi) => oi.monthKey === newInst.monthKey);
+            if (oldInst) {
+              newInst.amountPaid = oldInst.amountPaid;
+              newInst.remainingDue = Math.max(0, newAmount - oldInst.amountPaid);
+              newInst.status =
+                newInst.amountPaid >= newAmount
+                  ? 'Paid'
+                  : newInst.amountPaid > 0
+                  ? 'Partially Paid'
+                  : 'Pending';
+              newInst.transactions = oldInst.transactions;
+              newInst.lastPaymentDate = oldInst.lastPaymentDate;
+              newInst.notes = oldInst.notes;
+            }
+          });
+          updated.installments = newInstallments;
+        }
+
+        state.individualCommittees[idx] = recalculateCommittee(updated);
+      }
+      saveToLocalStorage(state);
+    },
+
+    deleteIndividualCommittee: (state, action: PayloadAction<string>) => {
+      state.individualCommittees = state.individualCommittees.filter((c) => c.id !== action.payload);
+      saveToLocalStorage(state);
+    },
+
+    // Record Payment on an Installment (Supports Full, Partial, Multiple Installments)
+    recordInstallmentPayment: (
+      state,
+      action: PayloadAction<{
+        committeeId: string;
+        installmentId?: string;
+        monthKey?: string;
+        monthYear?: string;
+        amount: number;
+        paymentDate?: string;
+        paymentMethod?: string;
+        notes?: string;
+        referenceNo?: string;
+        isOverride?: boolean;
+      }>
+    ) => {
+      const {
+        committeeId,
+        installmentId,
+        monthKey,
+        monthYear,
+        amount,
+        paymentDate,
+        paymentMethod,
+        notes,
+        referenceNo,
+        isOverride,
+      } = action.payload;
+
+      const cIdx = state.individualCommittees.findIndex((c) => c.id === committeeId);
+      if (cIdx === -1) return;
+
+      const committee = state.individualCommittees[cIdx];
+      const instIndex = committee.installments.findIndex(
+        (inst) =>
+          (installmentId && inst.id === installmentId) ||
+          (monthKey && inst.monthKey === monthKey) ||
+          (monthYear && inst.monthYear.toLowerCase() === monthYear.toLowerCase())
+      );
+
+      if (instIndex === -1) return;
+
+      const inst = committee.installments[instIndex];
+      const today = paymentDate || new Date().toISOString().split('T')[0];
+
+      if (amount <= 0 && isOverride) {
+        inst.amountPaid = 0;
+        inst.remainingDue = inst.amountDue;
+        inst.status = 'Pending';
+        inst.transactions = [];
+        inst.lastPaymentDate = undefined;
+      } else if (amount > 0) {
+        const tx: CommitteePaymentTransaction = {
+          id: `tx-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          installmentId: inst.id,
+          monthYear: inst.monthYear,
+          amount,
+          paymentDate: today,
+          paymentMethod: paymentMethod || 'Cash',
+          notes: notes || '',
+          referenceNo: referenceNo || '',
+          createdAt: new Date().toISOString(),
+        };
+
+        if (isOverride) {
+          inst.transactions = [tx];
+          inst.amountPaid = Math.min(inst.amountDue, amount);
+        } else {
+          inst.transactions.push(tx);
+          inst.amountPaid = Math.min(inst.amountDue, inst.amountPaid + amount);
+        }
+
+        inst.remainingDue = Math.max(0, inst.amountDue - inst.amountPaid);
+        inst.lastPaymentDate = today;
+
+        if (inst.amountPaid >= inst.amountDue) {
+          inst.status = 'Paid';
+        } else if (inst.amountPaid > 0) {
+          inst.status = 'Partially Paid';
+        } else {
+          inst.status = 'Pending';
+        }
+      }
+
+      state.individualCommittees[cIdx] = recalculateCommittee(committee);
+      saveToLocalStorage(state);
+    },
+
+    bulkPayLocationCurrentMonth: (
+      state,
+      action: PayloadAction<{ locationId: string; monthKey?: string; paymentDate?: string }>
+    ) => {
+      const { locationId, monthKey, paymentDate } = action.payload;
+      const today = paymentDate || new Date().toISOString().split('T')[0];
+      const now = new Date();
+      const targetMonthKey = monthKey || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+      state.individualCommittees.forEach((committee, idx) => {
+        if (committee.locationId === locationId) {
+          // Strictly target the installment for targetMonthKey (no arbitrary fallback)
+          const inst = committee.installments.find((i) => i.monthKey === targetMonthKey);
+
+          if (inst && inst.remainingDue > 0) {
+            const amountToPay = inst.remainingDue;
+            inst.amountPaid += amountToPay;
+            inst.remainingDue = 0;
+            inst.status = 'Paid';
+            inst.lastPaymentDate = today;
+            inst.transactions.push({
+              id: `tx-bulk-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+              installmentId: inst.id,
+              monthYear: inst.monthYear,
+              amount: amountToPay,
+              paymentDate: today,
+              paymentMethod: 'Bank Transfer',
+              notes: `Bulk payment for ${inst.monthYear}`,
+              createdAt: new Date().toISOString(),
+            });
+          }
+          state.individualCommittees[idx] = recalculateCommittee(committee, targetMonthKey);
+        }
+      });
+
       saveToLocalStorage(state);
     },
 
@@ -324,12 +771,22 @@ export const {
   deletePortion,
   addLedgerEntry,
   toggleCommitteeStatus,
+  recordCommitteePayment,
+  updateCommitteeMember,
   addCommitteeMember,
   deleteCommitteeMember,
   addExpense,
   deleteExpense,
   addInvestment,
   deleteInvestment,
+  addCommitteeLocation,
+  updateCommitteeLocation,
+  deleteCommitteeLocation,
+  addIndividualCommittee,
+  updateIndividualCommittee,
+  deleteIndividualCommittee,
+  recordInstallmentPayment,
+  bulkPayLocationCurrentMonth,
   hydrateFromServer,
   setApiStatus,
   setLoading,

@@ -155,11 +155,13 @@ export const RentalPortionsView: React.FC = () => {
     setIsAddModalOpen(false);
   };
 
-  // Open Collect Modal (ALL FIELDS EMPTY as requested)
+  // Open Collect Modal with monthly rent pre-filled, today's date auto-selected, and gas, bijli, remarks empty
   const handleOpenCollect = (p: Portion) => {
     setSelectedPortion(p);
-    setCollectMonthlyRent('');
-    setCollectDate('');
+    setCollectMonthlyRent(p.monthlyRent ? String(p.monthlyRent) : '');
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    setCollectDate(todayStr);
     setCollectElectricBill('');
     setCollectGasBill('');
     setCollectRemarks('');

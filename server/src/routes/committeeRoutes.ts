@@ -1,19 +1,255 @@
 import { Router, Request, Response } from 'express';
 import { Committee, CommitteeMember } from '../models/Committee';
+import { resetMonthlyCommitteeStatus } from '../services/cronService';
 
 const router = Router();
+
+// Helper: current month formatted as YYYY-MM
+const getCurrentMonthYear = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+};
+
+// Helper: format member and evaluate fallback current month status
+const formatMemberWithMonthStatus = (m: any, currentMonthYear: string) => {
+  const obj = m.toObject ? m.toObject() : m;
+  const history = obj.paymentHistory || [];
+  const currentRecord = history.find((p: any) => p.monthYear === currentMonthYear);
+
+  let currentStatus: 'Paid' | 'Partial' | 'Pending' = 'Pending';
+  let amountPaid = 0;
+  let remainingDue = obj.monthlyInstallment || 0;
+  let notes = obj.notes || '';
+
+  if (currentRecord) {
+    currentStatus = currentRecord.status;
+    amountPaid = currentRecord.amountPaid || 0;
+    remainingDue = currentRecord.remainingDue !== undefined ? currentRecord.remainingDue : Math.max(0, (obj.monthlyInstallment || 0) - amountPaid);
+    notes = currentRecord.notes || notes;
+  } else if (obj.status) {
+    currentStatus = obj.status;
+    amountPaid = currentStatus === 'Paid' ? (obj.monthlyInstallment || 0) : (obj.currentMonthPaidAmount || 0);
+    remainingDue = Math.max(0, (obj.monthlyInstallment || 0) - amountPaid);
+  }
+
+  return {
+    ...obj,
+    id: obj._id ? obj._id.toString() : obj.id,
+    _id: obj._id ? obj._id.toString() : obj.id,
+    name: obj.memberName || obj.name,
+    status: currentStatus,
+    currentMonthPaidAmount: amountPaid,
+    currentMonthRemainingDue: remainingDue,
+    notes,
+    currentMonthYear,
+  };
+};
+
+// GET /api/committees/members - Get all committee members with fallback month status
+router.get('/members', async (_req: Request, res: Response) => {
+  try {
+    const currentMonthYear = getCurrentMonthYear();
+    const members = await CommitteeMember.find().sort({ createdAt: -1 });
+
+    const formatted = members.map((m) => formatMemberWithMonthStatus(m, currentMonthYear));
+    res.json({ success: true, count: formatted.length, currentMonthYear, data: formatted });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST /api/committees/members - Add new committee participant
+router.post('/members', async (req: Request, res: Response) => {
+  try {
+    const { name, memberName, monthlyInstallment, startDate, endDate, payoutMonth, notes } = req.body;
+    const finalName = (name || memberName || '').trim();
+    if (!finalName) {
+      return res.status(400).json({ success: false, message: 'Member name is required' });
+    }
+
+    const currentMonthYear = getCurrentMonthYear();
+    const start = startDate || currentMonthYear;
+    const end = endDate || '';
+
+    // Validate that End Date is after Start Date
+    if (start && end && end <= start) {
+      return res.status(400).json({ success: false, message: 'End Date must be after Start Date' });
+    }
+
+    const installment = Number(monthlyInstallment) || 0;
+    const member = await CommitteeMember.create({
+      memberName: finalName,
+      monthlyInstallment: installment,
+      startDate: start,
+      endDate: end,
+      payoutMonth: payoutMonth || 'Not Specified',
+      status: 'Pending',
+      currentMonthPaidAmount: 0,
+      currentMonthRemainingDue: installment,
+      paymentHistory: [
+        {
+          monthYear: currentMonthYear,
+          status: 'Pending',
+          amountPaid: 0,
+          remainingDue: installment,
+        },
+      ],
+      notes,
+    });
+
+    const formatted = formatMemberWithMonthStatus(member, currentMonthYear);
+    res.status(201).json({ success: true, data: formatted });
+  } catch (error: any) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+});
+
+// PUT /api/committees/members/:id - Update/Edit committee participant details
+router.put('/members/:id', async (req: Request, res: Response) => {
+  try {
+    const { name, memberName, monthlyInstallment, startDate, endDate, payoutMonth, notes } = req.body;
+    const member = await CommitteeMember.findById(req.params.id);
+    if (!member) {
+      return res.status(404).json({ success: false, message: 'Member not found' });
+    }
+
+    if (name || memberName) member.memberName = (name || memberName).trim();
+    if (monthlyInstallment !== undefined) member.monthlyInstallment = Number(monthlyInstallment);
+    if (startDate) member.startDate = startDate;
+    if (endDate) member.endDate = endDate;
+    if (payoutMonth) member.payoutMonth = payoutMonth.trim();
+    if (notes !== undefined) member.notes = notes;
+
+    if (member.startDate && member.endDate && member.endDate <= member.startDate) {
+      return res.status(400).json({ success: false, message: 'End Date must be after Start Date' });
+    }
+
+    await member.save();
+    const currentMonthYear = getCurrentMonthYear();
+    const formatted = formatMemberWithMonthStatus(member, currentMonthYear);
+    res.json({ success: true, message: 'Member details updated successfully', data: formatted });
+  } catch (error: any) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+});
+
+// PATCH / PUT /api/committees/members/:id/status - Update member payment (Full, Partial, Pending)
+const updateMemberStatusHandler = async (req: Request, res: Response) => {
+  try {
+    const { status, amountPaid, notes, monthYear } = req.body;
+    const targetMonthYear = monthYear || getCurrentMonthYear();
+
+    const member = await CommitteeMember.findById(req.params.id);
+    if (!member) {
+      return res.status(404).json({ success: false, message: 'Member not found' });
+    }
+
+    let nextStatus: 'Paid' | 'Partial' | 'Pending';
+    let paidAmt = 0;
+    let remDue = member.monthlyInstallment;
+
+    if (amountPaid !== undefined && amountPaid !== '') {
+      paidAmt = Number(amountPaid) || 0;
+      if (paidAmt >= member.monthlyInstallment) {
+        nextStatus = 'Paid';
+        paidAmt = member.monthlyInstallment;
+        remDue = 0;
+      } else if (paidAmt > 0) {
+        nextStatus = 'Partial';
+        remDue = Math.max(0, member.monthlyInstallment - paidAmt);
+      } else {
+        nextStatus = 'Pending';
+        paidAmt = 0;
+        remDue = member.monthlyInstallment;
+      }
+    } else if (status) {
+      nextStatus = status;
+      if (nextStatus === 'Paid') {
+        paidAmt = member.monthlyInstallment;
+        remDue = 0;
+      } else if (nextStatus === 'Partial') {
+        paidAmt = member.currentMonthPaidAmount || Math.round(member.monthlyInstallment / 2);
+        remDue = Math.max(0, member.monthlyInstallment - paidAmt);
+      } else {
+        paidAmt = 0;
+        remDue = member.monthlyInstallment;
+      }
+    } else {
+      nextStatus = member.status === 'Paid' ? 'Pending' : 'Paid';
+      paidAmt = nextStatus === 'Paid' ? member.monthlyInstallment : 0;
+      remDue = nextStatus === 'Paid' ? 0 : member.monthlyInstallment;
+    }
+
+    member.status = nextStatus;
+    member.currentMonthPaidAmount = paidAmt;
+    member.currentMonthRemainingDue = remDue;
+
+    if (!member.paymentHistory) {
+      member.paymentHistory = [];
+    }
+
+    const recordIndex = member.paymentHistory.findIndex((p) => p.monthYear === targetMonthYear);
+    const paymentEntry = {
+      monthYear: targetMonthYear,
+      status: nextStatus,
+      paidDate: nextStatus !== 'Pending' ? new Date() : undefined,
+      amountPaid: paidAmt,
+      remainingDue: remDue,
+      notes: notes !== undefined ? notes : (recordIndex !== -1 ? member.paymentHistory[recordIndex].notes : ''),
+    };
+
+    if (recordIndex !== -1) {
+      member.paymentHistory[recordIndex] = paymentEntry;
+    } else {
+      member.paymentHistory.push(paymentEntry);
+    }
+
+    await member.save();
+    const formatted = formatMemberWithMonthStatus(member, targetMonthYear);
+    res.json({ success: true, message: `Payment updated: ${nextStatus} (Paid: Rs ${paidAmt})`, data: formatted });
+  } catch (error: any) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+router.patch('/members/:id/status', updateMemberStatusHandler);
+router.put('/members/:id/status', updateMemberStatusHandler);
+
+// DELETE /api/committees/members/:id - Remove member
+router.delete('/members/:id', async (req: Request, res: Response) => {
+  try {
+    const member = await CommitteeMember.findByIdAndDelete(req.params.id);
+    if (!member) {
+      return res.status(404).json({ success: false, message: 'Member not found' });
+    }
+    res.json({ success: true, message: 'Member deleted successfully' });
+  } catch (error: any) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+});
+
+// POST /api/committees/reset-monthly - Manual trigger for monthly reset
+router.post('/reset-monthly', async (_req: Request, res: Response) => {
+  try {
+    const result = await resetMonthlyCommitteeStatus();
+    res.json({ success: true, message: 'Monthly reset triggered successfully', ...result });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 
 // GET all committees with member summary
 router.get('/', async (_req: Request, res: Response) => {
   try {
     const committees = await Committee.find().sort({ startDate: -1 });
+    const currentMonthYear = getCurrentMonthYear();
     const committeesWithDetails = await Promise.all(
       committees.map(async (c) => {
         const members = await CommitteeMember.find({ committeeId: c._id }).sort({ payoutMonthIndex: 1 });
         return {
           ...c.toObject(),
           memberCount: members.length,
-          members,
+          members: members.map((m) => formatMemberWithMonthStatus(m, currentMonthYear)),
         };
       })
     );
